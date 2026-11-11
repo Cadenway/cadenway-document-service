@@ -2,14 +2,14 @@
 
 waypoint-document-service owns block documents. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3014.
 
-| | |
-| --- | --- |
-| Data | Documents: title, blocks stored as Markdown, author, dates. |
-| API | List, read, create, update, delete. |
-| Emits | `doc.created`, `doc.updated`, `doc.deleted` |
-| Listens to | `organization.deleted` |
-| External | None. |
-| Phase | Extracted later, when needed |
+|            |                                                             |
+| ---------- | ----------------------------------------------------------- |
+| Data       | Documents: title, blocks stored as Markdown, author, dates. |
+| API        | List, read, create, update, delete.                         |
+| Emits      | `doc.created`, `doc.updated`, `doc.deleted`                 |
+| Listens to | `organization.deleted`                                      |
+| External   | None.                                                       |
+| Phase      | Extracted later, when needed                                |
 
 Starts as a module of waypoint-task-service.
 
