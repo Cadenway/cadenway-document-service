@@ -1,6 +1,6 @@
-# waypoint-document-service documentation
+# cadenway-document-service documentation
 
-Planned role: waypoint-document-service owns block documents. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@waypoint/nest-messaging`, internal REST for the API gateway. Local port 3014.
+Planned role: cadenway-document-service owns block documents. NestJS, its own PostgreSQL database (one database and one user in the shared PostgreSQL of the VPS), events over NATS JetStream through `@cadenway/nest-messaging`, internal REST for the API gateway. Local port 3014.
 
 ## Current status
 
