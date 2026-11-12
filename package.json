@@ -1,7 +1,7 @@
 {
-  "name": "waypoint-document-service",
+  "name": "cadenway-document-service",
   "version": "0.0.0",
-  "description": "Waypoint document service: block documents.",
+  "description": "Cadenway document service: block documents.",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
