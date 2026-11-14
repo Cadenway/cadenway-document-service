@@ -9,9 +9,9 @@ cadenway-document-service owns block documents. NestJS, its own PostgreSQL datab
 | Emits      | `doc.created`, `doc.updated`, `doc.deleted`                 |
 | Listens to | `organization.deleted`                                      |
 | External   | None.                                                       |
-| Phase      | Extracted later, when needed                                |
+| Phase      | After the first version                                     |
 
-Starts as a module of cadenway-task-service.
+Built in this repository from the start: it never lives as a module of another service.
 
 ## Getting started
 
