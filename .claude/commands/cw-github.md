@@ -3,6 +3,4 @@ description: "Change workflows, templates or community files in .github/."
 argument-hint: "<change>"
 ---
 
-Delegate to the **cw-document-github-maintainer** subagent: $ARGUMENTS
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate to subagent **cw-document-github-maintainer** without restating its rules or procedure: $ARGUMENTS

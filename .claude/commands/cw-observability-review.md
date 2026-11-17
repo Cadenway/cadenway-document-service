@@ -3,6 +3,4 @@ description: "Review logs, traces, metrics and health checks."
 argument-hint: "[files]"
 ---
 
-Delegate to the **cw-document-observability-reviewer** subagent: $ARGUMENTS
-
-The agent carries its own procedure and rules; do not restate them.
+Delegate to subagent **cw-document-observability-reviewer** without restating its rules or procedure: $ARGUMENTS
