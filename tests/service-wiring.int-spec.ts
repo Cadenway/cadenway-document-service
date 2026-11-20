@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
+import { cp, mkdir, mkdtemp, readFile, rm, rmdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -18,6 +21,8 @@ import { SystemTransactionRunner, TenantTransactionRunner } from '@cadenway/nest
 import { Controller, Get, Injectable, Module } from '@nestjs/common';
 import type { BeforeApplicationShutdown } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -60,6 +65,9 @@ const platformTables = [
   'outbox_events',
   'processed_events',
 ] as const;
+
+/** Organization data introduced after the platform bootstrap. */
+const documentTables = ['document_create_receipts', 'documents'] as const;
 
 /**
  * Runs `docker compose` on the throwaway project.
@@ -175,6 +183,32 @@ async function runMigrator(): Promise<void> {
   }
 }
 
+/** Applies the published bootstrap migration on its own before exercising the production upgrade. */
+async function runPlatformMigration(client: pg.Pool): Promise<void> {
+  const source = fileURLToPath(new URL('../migrations', import.meta.url));
+  const folder = await mkdtemp(join(tmpdir(), 'document-migration-test-'));
+  const meta = join(folder, 'meta');
+  const bootstrap = '0000_platform_tables';
+  try {
+    await mkdir(meta);
+    const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as {
+      readonly version: string;
+      readonly dialect: string;
+      readonly entries: readonly { readonly tag: string }[];
+    };
+    const [entry] = journal.entries;
+    if (entry?.tag !== bootstrap) throw new Error('Platform migration is missing.');
+    await cp(join(source, `${entry.tag}.sql`), join(folder, `${entry.tag}.sql`));
+    await writeFile(join(meta, '_journal.json'), JSON.stringify({ ...journal, entries: [entry] }));
+    await migrate(drizzle({ client }), { migrationsFolder: folder });
+  } finally {
+    await rm(join(meta, '_journal.json'), { force: true });
+    await rm(join(folder, `${bootstrap}.sql`), { force: true });
+    await rmdir(meta);
+    await rmdir(folder);
+  }
+}
+
 /** Releases the shutdown held by `ShutdownGate`. */
 let releaseShutdown: () => void = () => undefined;
 
@@ -208,6 +242,7 @@ describe('document-service wiring', () => {
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
+  let platformMigration: { readonly applied: string; readonly hash: string } | undefined;
 
   /**
    * The running application.
@@ -239,7 +274,6 @@ describe('document-service wiring', () => {
       'MIGRATION_DATABASE_URL',
       `postgres://document_migrator:document_migrator@127.0.0.1:${postgresPort}/document`,
     );
-    await runMigrator();
     migrator = new pg.Pool({
       connectionString: `postgres://document_migrator:document_migrator@127.0.0.1:${postgresPort}/document`,
       max: 1,
@@ -249,6 +283,12 @@ describe('document-service wiring', () => {
     // The client is terminated (57P01) when a test stops PostgreSQL; the pool reports it as an
     // `error` event, which would otherwise be an uncaught exception.
     migrator.on('error', () => undefined);
+    await runPlatformMigration(migrator);
+    const { rows } = await migrator.query<{ applied: string; hash: string }>(
+      'select created_at as applied, hash from drizzle.__drizzle_migrations',
+    );
+    [platformMigration] = rows;
+    await runMigrator();
 
     vi.stubEnv('PORT', '3014');
     vi.stubEnv('LOG_PRETTY', 'false');
@@ -303,18 +343,23 @@ describe('document-service wiring', () => {
     }
   });
 
-  it('applies its migration as the migrator role, which owns the platform tables', async () => {
+  it('upgrades the bootstrap journal and keeps every table owned by the migrator', async () => {
     const tables = await migrator.query<{ tablename: string; tableowner: string }>(
       `select tablename, tableowner from pg_tables where schemaname = 'public' order by tablename`,
     );
-    const journal = await migrator.query<{ applied: number }>(
-      'select count(*)::int as applied from drizzle.__drizzle_migrations',
+    const journal = await migrator.query<{ applied: string; hash: string }>(
+      'select created_at as applied, hash from drizzle.__drizzle_migrations order by created_at',
     );
 
     expect(tables.rows).toEqual(
-      platformTables.map((tablename) => ({ tablename, tableowner: 'document_migrator' })),
+      [...documentTables, ...platformTables].map((tablename) => ({
+        tablename,
+        tableowner: 'document_migrator',
+      })),
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(platformMigration).toBeDefined();
+    expect(journal.rows).toHaveLength(2);
+    expect(journal.rows[0]).toEqual(platformMigration);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -323,7 +368,7 @@ describe('document-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 2 }]);
   });
 
   it('forces row-level security on the tables that carry an organization', async () => {
@@ -342,12 +387,22 @@ describe('document-service wiring', () => {
     );
 
     expect(tables.rows).toEqual([
+      ...documentTables.map((relname) => ({
+        relname,
+        relrowsecurity: true,
+        relforcerowsecurity: true,
+      })),
       { relname: 'event_versions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'idempotency_keys', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'outbox_events', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'processed_events', relrowsecurity: false, relforcerowsecurity: false },
     ]);
     expect(policies.rows).toEqual([
+      {
+        tablename: 'document_create_receipts',
+        policyname: 'document_create_receipts_organization_isolation',
+      },
+      { tablename: 'documents', policyname: 'documents_organization_isolation' },
       { tablename: 'event_versions', policyname: 'event_versions_organization_isolation' },
       { tablename: 'idempotency_keys', policyname: 'idempotency_keys_organization_isolation' },
       { tablename: 'outbox_events', policyname: 'outbox_events_organization_isolation' },
@@ -519,7 +574,7 @@ describe('document-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 1 }]);
+    expect(journal.rows).toEqual([{ applied: 2 }]);
   });
 
   it('publishes a pending event through the outbox relay', async () => {

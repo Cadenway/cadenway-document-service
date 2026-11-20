@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 
@@ -18,6 +19,12 @@ describe('appConfigSchema', () => {
     INTERNAL_TOKEN_AUDIENCE: 'document-service',
     INTERNAL_TOKEN_TRUSTED_ISSUERS: trustedIssuers,
   };
+  const taskServiceUrl = 'http://task-service:3013';
+
+  function taskSigningKey(): string {
+    const jwk = generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' });
+    return JSON.stringify({ ...jwk, kid: 'document-test' });
+  }
 
   it('reads the variables of the service with the defaults of the kit', () => {
     expect(loadConfig(appConfigSchema, complete)).toEqual({
@@ -102,6 +109,61 @@ describe('appConfigSchema', () => {
 
   it('does not read the migrator URL: the running service never needs it', () => {
     expect(loadConfig(appConfigSchema, complete)).not.toHaveProperty('MIGRATION_DATABASE_URL');
+  });
+
+  it('leaves Task access unconfigured when Compose supplies two empty defaults', () => {
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      TASK_SERVICE_URL: '',
+      INTERNAL_TOKEN_PRIVATE_JWK: '',
+    });
+    expect(config.TASK_SERVICE_URL).toBeUndefined();
+    expect(config.INTERNAL_TOKEN_PRIVATE_JWK).toBeUndefined();
+  });
+
+  it('loads the Task base URL and a signing key together', () => {
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      TASK_SERVICE_URL: taskServiceUrl,
+      INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey(),
+    });
+    expect(config.TASK_SERVICE_URL).toBe(taskServiceUrl);
+    expect(config.INTERNAL_TOKEN_PRIVATE_JWK?.kid).toBe('document-test');
+  });
+
+  it('names the missing setting when only half of Task access is configured', () => {
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_URL: taskServiceUrl }),
+    ).toThrow(/INTERNAL_TOKEN_PRIVATE_JWK: required, not set/u);
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey() }),
+    ).toThrow(/TASK_SERVICE_URL: required, not set/u);
+  });
+
+  it.each([
+    'not-a-url',
+    'ftp://task-service:3013',
+    'http://document:task-password@task-service:3013',
+  ])('refuses an invalid or credential-bearing Task URL', (url) => {
+    const load = () =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        TASK_SERVICE_URL: url,
+        INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey(),
+      });
+    expect(load).toThrow(/TASK_SERVICE_URL/u);
+    expect(load).not.toThrow(/task-password/u);
+  });
+
+  it('names an invalid Task signing key without reflecting its value', () => {
+    const load = () =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        TASK_SERVICE_URL: taskServiceUrl,
+        INTERNAL_TOKEN_PRIVATE_JWK: 'invalid-key-sentinel',
+      });
+    expect(load).toThrow(/INTERNAL_TOKEN_PRIVATE_JWK/u);
+    expect(load).not.toThrow(/invalid-key-sentinel/u);
   });
 });
 

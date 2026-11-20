@@ -11,6 +11,7 @@ import { Module } from '@nestjs/common';
 
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { DocumentsModule } from './modules/documents/documents.module.js';
 import { PlatformModule } from './modules/platform/platform.module.js';
 
 /**
@@ -31,8 +32,8 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  * - `MessagingModule`: the NATS connection of the `document` user, with the inbox prefix
  *   `_INBOX.document` the broker requires. The creation waits for the first connection, then checks
  *   that the `EVENTS` stream exists: cadenway-ops creates the streams (`manageStreams: false`), and
- *   only notification-service runs the dead-letter worker. The service publishes and consumes
- *   nothing yet, since `@cadenway/contracts` defines no event of its own.
+ *   only notification-service runs the dead-letter worker. Documents publishes its lifecycle
+ *   events through the outbox.
  * - `OutboxModule`: the outbox writer, the PostgreSQL deduplicator and the relay, which polls
  *   `outbox_events` every second in a system transaction and publishes the pending rows. It runs in
  *   every replica; `for update skip locked` keeps two of them from publishing the same row.
@@ -46,6 +47,7 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  *   lengthen every stop, under the 10 second default grace period of Docker, without moving any
  *   request away; set it above the probe interval of a proxy if one ever routes on readiness.
  * - `PlatformModule`: the owner of the kit tables in the migrations of the service.
+ * - `DocumentsModule`: the organization-scoped document catalog and editing operations.
  *
  * Business modules under `src/modules/` are registered here as they are created.
  */
@@ -81,6 +83,7 @@ import { PlatformModule } from './modules/platform/platform.module.js';
       }),
     }),
     PlatformModule,
+    DocumentsModule,
   ],
 })
 export class AppModule {}
