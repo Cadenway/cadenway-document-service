@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/Cadenway/cadenway-document-service/compare/v0.3.0...v0.4.0) (2026-11-20)
+
+
+### Features
+
+* **documents:** add the document catalog and editing ([#27](https://github.com/Cadenway/cadenway-document-service/issues/27)) ([d131923](https://github.com/Cadenway/cadenway-document-service/commit/d13192348ab1404863b38b9fae1b6bfe24972164))
+* **documents:** export authoritative search projections ([#29](https://github.com/Cadenway/cadenway-document-service/issues/29)) ([dbc2a3e](https://github.com/Cadenway/cadenway-document-service/commit/dbc2a3ede5bd8f7e28ef21d50a89580175a55d7c))
+
 ## [0.3.0](https://github.com/Cadenway/cadenway-document-service/compare/v0.2.0...v0.3.0) (2026-11-16)
 
 
