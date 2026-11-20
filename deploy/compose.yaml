@@ -2,10 +2,9 @@
 # On each release the deploy workflow checks it and copies it into cadenway-ops, as
 # environments/<env>/services/document-service.yaml for the environment it deploys to.
 #
-# Internal service: no Traefik label, no published port. Secret values (the database URLs and the
-# NATS password) are referenced by name; they live in cadenway-ops, which documents every variable
-# below in docs/service-environment.md. A variable added here must exist on the host before the
-# release that reads it: the GitOps agent refuses a commit that leaves one unset.
+# Internal service: no Traefik label, no published port. Secret values are referenced by name;
+# they live in cadenway-ops, which documents each variable in docs/service-environment.md. Task
+# access lookups are enabled only when both optional variables below are configured.
 #
 # INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway only. The folded
 # scalar gives the service one line of JSON.
@@ -26,6 +25,8 @@ services:
       INTERNAL_TOKEN_AUDIENCE: document-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      TASK_SERVICE_URL: ${DOCUMENT_TASK_SERVICE_URL:-}
+      INTERNAL_TOKEN_PRIVATE_JWK: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
     networks:
       - internal
     healthcheck:

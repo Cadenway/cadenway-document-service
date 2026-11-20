@@ -39,8 +39,7 @@ the response of a route marked `@Idempotent()` in `idempotency_keys`; no route e
 ## Events emitted
 
 None. The outbox relay of `OutboxModule` publishes the rows the use cases of the business modules
-append with `OutboxWriter.append`; `@cadenway/contracts` defines no event of this service yet, so
-nothing is appended.
+append with `OutboxWriter.append`. Documents owns the lifecycle events defined in its module.
 
 ## Events consumed
 

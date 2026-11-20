@@ -87,6 +87,8 @@ each value comes from on a server.
 | `MIGRATION_DATABASE_URL`              | `src/migrate.ts` only | Migrator role `document_migrator`; required once a migration exists. The GitOps agent passes it to the migration container only, never to the running service |
 | `INTERNAL_TOKEN_AUDIENCE`             | The service           | `document-service`                                                                                                                                            |
 | `INTERNAL_TOKEN_TRUSTED_ISSUERS`      | The service           | One line of JSON: the public keys of each backend allowed to call it                                                                                          |
+| `TASK_SERVICE_URL`                    | The service           | Optional Task base URL, paired with `INTERNAL_TOKEN_PRIVATE_JWK`                                                                                              |
+| `INTERNAL_TOKEN_PRIVATE_JWK`          | The service           | Optional Ed25519 key for issuer `document-service`, paired with `TASK_SERVICE_URL`                                                                            |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`         | `src/telemetry.ts`    | OTLP over HTTP; unset, nothing leaves the process                                                                                                             |
 | `NATS_URL`                            | The service           | `nats://` URL of the broker                                                                                                                                   |
 | `NATS_USER`, `NATS_PASSWORD`          | The service           | User `document` and its password; inbox prefix `_INBOX.document`                                                                                              |
@@ -121,6 +123,11 @@ console.log(await signer.sign("document-service", {
 
 and send it as `Authorization: Bearer <token>`. Use a workstation key only: the keys of staging and
 production stay in the secrets of cadenway-ops.
+
+Document operations also need live space access from Task. Set `TASK_SERVICE_URL` to the Task base
+URL (for example, `http://localhost:3013`) and `INTERNAL_TOKEN_PRIVATE_JWK` to a dedicated local key
+whose public half Task trusts for the `document-service` issuer. Leave both settings empty to start
+the service with health checks available and document operations unavailable.
 
 ### Migrations
 

@@ -1,5 +1,13 @@
-import { baseConfigShape, internalTokenVerifierConfigShape } from '@cadenway/nest-common';
-import type { BaseConfig, InternalTokenVerifierConfig } from '@cadenway/nest-common';
+import {
+  baseConfigShape,
+  internalTokenSignerConfigShape,
+  internalTokenVerifierConfigShape,
+} from '@cadenway/nest-common';
+import type {
+  BaseConfig,
+  Ed25519PrivateJwk,
+  InternalTokenVerifierConfig,
+} from '@cadenway/nest-common';
 import { databaseConfigShape } from '@cadenway/nest-common/database';
 import type { DatabaseConfig } from '@cadenway/nest-common/database';
 import { messagingConfigShape } from '@cadenway/nest-messaging';
@@ -26,12 +34,18 @@ import { z } from 'zod';
  *   them.
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
  *   and the public keys of the backends allowed to call it.
+ * - `TASK_SERVICE_URL` and `INTERNAL_TOKEN_PRIVATE_JWK`: the Task base URL and the key used to
+ *   sign live direct-space access lookups as `document-service`. Set both to enable lookups.
  *
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is read by `telemetry.ts`, before the application exists.
- *
- * @type {BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig}
  */
-export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & InternalTokenVerifierConfig;
+export type AppConfig = BaseConfig &
+  DatabaseConfig &
+  MessagingConfig &
+  InternalTokenVerifierConfig & {
+    readonly TASK_SERVICE_URL?: string;
+    readonly INTERNAL_TOKEN_PRIVATE_JWK?: Ed25519PrivateJwk;
+  };
 
 /**
  * Constant appConfigSchema
@@ -44,12 +58,42 @@ export type AppConfig = BaseConfig & DatabaseConfig & MessagingConfig & Internal
  *
  * @type {z.ZodType<AppConfig>}
  */
-export const appConfigSchema: z.ZodType<AppConfig> = z.object({
-  ...baseConfigShape,
-  ...databaseConfigShape,
-  ...messagingConfigShape,
-  ...internalTokenVerifierConfigShape,
-});
+export const appConfigSchema: z.ZodType<AppConfig> = z
+  .object({
+    ...baseConfigShape,
+    ...databaseConfigShape,
+    ...messagingConfigShape,
+    ...internalTokenVerifierConfigShape,
+    TASK_SERVICE_URL: z
+      .url({ protocol: /^https?$/u, error: 'Expected the HTTP(S) base URL of task-service.' })
+      .refine((value) => {
+        const url = URL.parse(value);
+        return (
+          url !== null &&
+          url.username === '' &&
+          url.password === '' &&
+          url.search === '' &&
+          url.hash === ''
+        );
+      }, 'Expected a base URL without credentials, a query or a fragment.')
+      .optional(),
+    INTERNAL_TOKEN_PRIVATE_JWK:
+      internalTokenSignerConfigShape.INTERNAL_TOKEN_PRIVATE_JWK.optional(),
+  })
+  .superRefine((config, context) => {
+    if (
+      (config.TASK_SERVICE_URL === undefined) !==
+      (config.INTERNAL_TOKEN_PRIVATE_JWK === undefined)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: [
+          config.TASK_SERVICE_URL === undefined ? 'TASK_SERVICE_URL' : 'INTERNAL_TOKEN_PRIVATE_JWK',
+        ],
+        message: 'Set TASK_SERVICE_URL and INTERNAL_TOKEN_PRIVATE_JWK together.',
+      });
+    }
+  });
 
 /**
  * Interface MigrationConfig

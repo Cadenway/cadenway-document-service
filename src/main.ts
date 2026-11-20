@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
 import { appConfigSchema } from './config/app-config.js';
 import type { AppConfig } from './config/app-config.js';
+import { configureDocumentPrivateHttp } from './infrastructure/http/document-private-http.js';
 
 // Started after the instrumentation hooks and `telemetry.js`, with the heap capped for the 256M
 // container: `node --max-old-space-size=160 --import @cadenway/nest-common/register
@@ -24,7 +25,13 @@ await runApplication({ service: 'document-service' }, async (): Promise<void> =>
         audience: config.INTERNAL_TOKEN_AUDIENCE,
         trustedIssuers: config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
       },
+      ...(config.INTERNAL_TOKEN_PRIVATE_JWK === undefined
+        ? {}
+        : {
+            signer: { issuer: 'document-service', privateJwk: config.INTERNAL_TOKEN_PRIVATE_JWK },
+          }),
     },
   });
+  configureDocumentPrivateHttp(app);
   await app.listen(config.PORT);
 });
