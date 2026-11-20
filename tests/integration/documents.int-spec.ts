@@ -4,6 +4,10 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
+import type {
+  DocumentSearchProjectionPage,
+  DocumentSearchProjectionResults,
+} from '@cadenway/contracts/types/internal/document-service';
 import {
   createApplication,
   InternalTokenSigner,
@@ -27,6 +31,9 @@ const otherOrganizationId = '01938f6e-0000-7000-8000-000000000002';
 const userId = '01938f6e-8a42-7d5b-b2c9-5e1f3a6d9c24';
 const spaceId = '123e4567-e89b-42d3-a456-426614174000';
 const hiddenSpaceId = '123e4567-e89b-42d3-a456-426614174001';
+const projectionOrganizationId = '01938f6e-0000-7000-8000-00000000000a';
+const projectionPath = '/internal/v1/document-search-projections';
+const maximumProjectionBytes = 1_048_576;
 
 function compose(...args: readonly string[]): string {
   return execFileSync(
@@ -54,8 +61,10 @@ function keys(kid: string): { publicJwk: Ed25519PublicJwk; privateJwk: Ed25519Pr
 describe('documents through the signed internal HTTP boundary', () => {
   const gateway = keys('gateway-test');
   const documentSigner = keys('document-test');
+  const search = keys('search-test');
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
+  let searchSigner: InternalTokenSigner;
   let admin: pg.Pool | undefined;
   let task: Server | undefined;
   let taskVerifier: InternalTokenVerifier;
@@ -98,6 +107,42 @@ describe('documents through the signed internal HTTP boundary', () => {
       actor: { type: 'user', id: userId },
       organizationId: organization,
     });
+  }
+
+  async function projectionBearer(organization: string): Promise<string> {
+    return searchSigner.sign('document-service', {
+      actor: { type: 'system', id: 'search-service' },
+      organizationId: organization,
+    });
+  }
+
+  async function insertProjectionSource(
+    organization: string,
+    projection: { documentId: string; version: number; title: string; body: string },
+  ): Promise<void> {
+    const client = await database().connect();
+    try {
+      await client.query('begin');
+      await client.query("select set_config('app.organization_id', $1, true)", [organization]);
+      await client.query(
+        `insert into documents
+          (organization_id, id, space_id, version, status, title, body, author_user_id, created_at, updated_at)
+         values ($1, $2, $3, $4, 'active', $5, $6, $7, now(), now())`,
+        [
+          organization,
+          projection.documentId,
+          spaceId,
+          projection.version,
+          projection.title,
+          projection.body,
+          userId,
+        ],
+      );
+      await client.query('commit');
+    } finally {
+      await client.query('rollback');
+      client.release();
+    }
   }
 
   beforeAll(async () => {
@@ -172,13 +217,17 @@ describe('documents through the signed internal HTTP boundary', () => {
     vi.stubEnv('INTERNAL_TOKEN_AUDIENCE', 'document-service');
     vi.stubEnv(
       'INTERNAL_TOKEN_TRUSTED_ISSUERS',
-      JSON.stringify({ 'api-gateway': [gateway.publicJwk] }),
+      JSON.stringify({ 'api-gateway': [gateway.publicJwk], 'search-service': [search.publicJwk] }),
     );
     vi.stubEnv('INTERNAL_TOKEN_PRIVATE_JWK', JSON.stringify(documentSigner.privateJwk));
     vi.stubEnv('TASK_SERVICE_URL', `http://127.0.0.1:${String(address.port)}`);
     signer = await InternalTokenSigner.create({
       issuer: 'api-gateway',
       privateJwk: gateway.privateJwk,
+    });
+    searchSigner = await InternalTokenSigner.create({
+      issuer: 'search-service',
+      privateJwk: search.privateJwk,
     });
     app = await makeApp();
   });
@@ -458,5 +507,190 @@ describe('documents through the signed internal HTTP boundary', () => {
         'alter table outbox_events drop constraint fixture_reject_document_fact',
       );
     }
+  });
+
+  it('requires the verified Search issuer, system actor, audience and organization for projections', async () => {
+    const organizationId = projectionOrganizationId;
+    const systemActor = { type: 'system' as const, id: 'search-service' };
+    const denied: readonly [string | undefined, number][] = [
+      [undefined, 401],
+      [await signer.sign('document-service', { actor: systemActor, organizationId }), 403],
+      [
+        await searchSigner.sign('document-service', {
+          actor: { type: 'user', id: userId },
+          organizationId,
+        }),
+        403,
+      ],
+      [
+        await searchSigner.sign('document-service', {
+          actor: { type: 'system', id: 'a-different-service' },
+          organizationId,
+        }),
+        403,
+      ],
+      [
+        await searchSigner.sign('document-service', { actor: systemActor, organizationId: null }),
+        403,
+      ],
+      [await searchSigner.sign('task-service', { actor: systemActor, organizationId }), 401],
+    ];
+    for (const [token, status] of denied) {
+      const list = request(service().getHttpServer()).get(projectionPath);
+      if (token !== undefined) list.set('Authorization', `Bearer ${token}`);
+      await list.expect(status).expect('Cache-Control', 'private, no-store');
+    }
+
+    const token = await projectionBearer(organizationId);
+    await request(service().getHttpServer())
+      .get(projectionPath)
+      .set('Authorization', `Bearer ${token}`)
+      .query({ organizationId: otherOrganizationId })
+      .expect(400)
+      .expect('Cache-Control', 'private, no-store');
+    const documentId = '01900000-0000-7000-8000-00000000000a';
+    await request(service().getHttpServer())
+      .post(`${projectionPath}/resolve`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ documentIds: [documentId, documentId.toUpperCase()] })
+      .expect(400)
+      .expect('Cache-Control', 'private, no-store');
+  });
+
+  it('measures escaped UTF-8 before returning a bounded page and resumes within the original UUID fence', async () => {
+    const organization = projectionOrganizationId;
+    const first = {
+      documentId: '01900000-0000-7000-8000-000000000001',
+      spaceId,
+      version: 7,
+      title: 'Quoted " title É',
+      body: '\u0001'.repeat(90_000) + '😀'.repeat(5_000),
+    };
+    const second = {
+      ...first,
+      documentId: '01900000-0000-7000-8000-000000000002',
+      body: '',
+    };
+    const bytesWithEmptySecond = Buffer.byteLength(
+      JSON.stringify({ items: [first, second], nextCursor: null }),
+    );
+    const remainder = maximumProjectionBytes - bytesWithEmptySecond;
+    second.body = '\u0001'.repeat(Math.floor(remainder / 6)) + 'a'.repeat(remainder % 6);
+    expect(Buffer.byteLength(JSON.stringify({ items: [first, second], nextCursor: null }))).toBe(
+      maximumProjectionBytes,
+    );
+    const fence = {
+      ...first,
+      documentId: '01900000-0000-7000-8000-000000000003',
+      body: '\r\n"\\',
+    };
+    const beyondFence = { ...fence, documentId: '01900000-0000-7000-8000-000000000004' };
+    await insertProjectionSource(organization, first);
+    await insertProjectionSource(organization, second);
+    await insertProjectionSource(organization, fence);
+    await insertProjectionSource(otherOrganizationId, beyondFence);
+    const token = await projectionBearer(organization);
+    const response = await request(service().getHttpServer())
+      .get(projectionPath)
+      .set('Authorization', `Bearer ${token}`)
+      .set('If-None-Match', '*')
+      .query({ limit: 100 })
+      .expect(200)
+      .expect('Cache-Control', 'private, no-store');
+    expect(Buffer.byteLength(response.text)).toBeLessThanOrEqual(maximumProjectionBytes);
+    const page = JSON.parse(response.text) as DocumentSearchProjectionPage;
+    expect(page.items.map((item) => item.documentId)).toEqual([first.documentId]);
+    expect(page.items[0]?.body === first.body).toBe(true);
+    const cursor = page.nextCursor;
+    if (cursor === null) throw new Error('Expected a continuation for the remaining documents.');
+
+    await insertProjectionSource(organization, beyondFence);
+    await service().close();
+    app = await makeApp();
+    const resumed = await request(service().getHttpServer())
+      .get(projectionPath)
+      .set('Authorization', `Bearer ${await projectionBearer(organization)}`)
+      .query({ cursor, limit: 100 })
+      .expect(200);
+    expect(Buffer.byteLength(resumed.text)).toBeLessThanOrEqual(maximumProjectionBytes);
+    const last = JSON.parse(resumed.text) as DocumentSearchProjectionPage;
+    expect(last.items.map((item) => item.documentId)).toEqual([
+      second.documentId,
+      fence.documentId,
+    ]);
+    expect(last.items[0]?.body === second.body).toBe(true);
+    expect(last.items[1]?.body).toBe(fence.body);
+    expect(last.nextCursor).toBeNull();
+    await request(service().getHttpServer())
+      .get(projectionPath)
+      .set('Authorization', `Bearer ${await projectionBearer(otherOrganizationId)}`)
+      .query({ cursor })
+      .expect(400)
+      .expect('Cache-Control', 'private, no-store');
+
+    const overBudget = await request(service().getHttpServer())
+      .post(`${projectionPath}/resolve`)
+      .set('Authorization', `Bearer ${await projectionBearer(organization)}`)
+      .send({ documentIds: [first.documentId, second.documentId] })
+      .expect(422)
+      .expect('Cache-Control', 'private, no-store');
+    expect(overBudget.body).toMatchObject({ code: 'document.projection-batch-too-large' });
+    expect(overBudget.body).not.toHaveProperty('results');
+  });
+
+  it('resolves current legacy rows, no-op revisions and deletion fences in input order', async () => {
+    const organization = projectionOrganizationId;
+    const legacy = {
+      documentId: '01900000-0000-7000-8000-00000000000a',
+      spaceId,
+      version: 8,
+      title: 'Legacy source',
+      body: 'Existing source without an outbox event.',
+    };
+    const foreign = { ...legacy, documentId: '01900000-0000-7000-8000-00000000000b' };
+    const stillPresent = { ...legacy, documentId: '01900000-0000-7000-8000-00000000000c' };
+    const unknownId = '01900000-0000-7000-8000-00000000000d';
+    await insertProjectionSource(organization, legacy);
+    await insertProjectionSource(otherOrganizationId, foreign);
+    await insertProjectionSource(organization, stillPresent);
+
+    const userToken = await bearer(organization);
+    await request(service().getHttpServer())
+      .patch(`/internal/v1/documents/${legacy.documentId}`)
+      .set('Authorization', `Bearer ${userToken}`)
+      .set('If-Match', '"8"')
+      .send({ title: legacy.title, body: legacy.body })
+      .expect(200)
+      .expect('ETag', '"8"');
+    const searchToken = await projectionBearer(organization);
+    const current = await request(service().getHttpServer())
+      .post(`${projectionPath}/resolve`)
+      .set('Authorization', `Bearer ${searchToken}`)
+      .send({ documentIds: [legacy.documentId.toUpperCase()] })
+      .expect(200)
+      .expect('Cache-Control', 'private, no-store');
+    expect(JSON.parse(current.text) as DocumentSearchProjectionResults).toEqual({
+      results: [{ status: 'present', projection: legacy }],
+    });
+    await request(service().getHttpServer())
+      .delete(`/internal/v1/documents/${legacy.documentId}`)
+      .set('Authorization', `Bearer ${userToken}`)
+      .set('If-Match', '"8"')
+      .expect(204);
+    const resolved = await request(service().getHttpServer())
+      .post(`${projectionPath}/resolve`)
+      .set('Authorization', `Bearer ${searchToken}`)
+      .send({
+        documentIds: [foreign.documentId, legacy.documentId, unknownId, stillPresent.documentId],
+      })
+      .expect(200);
+    expect(JSON.parse(resolved.text) as DocumentSearchProjectionResults).toEqual({
+      results: [
+        { status: 'absent', documentId: foreign.documentId, version: null },
+        { status: 'absent', documentId: legacy.documentId, version: 9 },
+        { status: 'absent', documentId: unknownId, version: null },
+        { status: 'present', projection: stillPresent },
+      ],
+    });
   });
 });

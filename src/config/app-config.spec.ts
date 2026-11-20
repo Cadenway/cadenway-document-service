@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseEnv } from 'node:util';
 
@@ -24,6 +24,11 @@ describe('appConfigSchema', () => {
   function taskSigningKey(): string {
     const jwk = generateKeyPairSync('ed25519').privateKey.export({ format: 'jwk' });
     return JSON.stringify({ ...jwk, kid: 'document-test' });
+  }
+
+  function searchPublicKey(kid: string): string {
+    const jwk = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
+    return JSON.stringify({ ...jwk, kid });
   }
 
   it('reads the variables of the service with the defaults of the kit', () => {
@@ -106,6 +111,99 @@ describe('appConfigSchema', () => {
       loadConfig(appConfigSchema, { ...complete, INTERNAL_TOKEN_TRUSTED_ISSUERS: withPrivateKey }),
     ).toThrow(/INTERNAL_TOKEN_TRUSTED_ISSUERS/u);
   });
+
+  it('leaves Search unconfigured when Compose supplies empty defaults', () => {
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: '',
+      SEARCH_PROJECTION_CURSOR_SECRET: '',
+    });
+
+    expect(config).toEqual(loadConfig(appConfigSchema, complete));
+  });
+
+  it('adds the Search public keys alongside the explicitly trusted issuers', () => {
+    const first = searchPublicKey('search-first');
+    const second = searchPublicKey('search-second');
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: `${first},${second}`,
+    });
+
+    expect(Object.keys(config.INTERNAL_TOKEN_TRUSTED_ISSUERS)).toEqual([
+      'api-gateway',
+      'search-service',
+    ]);
+    expect(config.INTERNAL_TOKEN_TRUSTED_ISSUERS['search-service']?.map((key) => key.kid)).toEqual([
+      'search-first',
+      'search-second',
+    ]);
+  });
+
+  it('uses explicit Search trust even when an unused fallback is malformed', () => {
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      INTERNAL_TOKEN_TRUSTED_ISSUERS: `{"search-service":[${searchPublicKey('explicit-search')}]}`,
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: 'unused-fallback',
+    });
+
+    expect(config.INTERNAL_TOKEN_TRUSTED_ISSUERS['search-service']?.map((key) => key.kid)).toEqual([
+      'explicit-search',
+    ]);
+  });
+
+  it('rejects malformed Search keys without printing the supplied text', () => {
+    const load = () =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: 'invalid-search-key-sentinel',
+      });
+
+    expect(load).toThrow(/SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
+    expect(load).not.toThrow(/invalid-search-key-sentinel/u);
+  });
+
+  it('rejects private material in the Search verification key list', () => {
+    expect(() =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: taskSigningKey(),
+      }),
+    ).toThrow(/SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
+  });
+
+  it('rejects fallback input that attempts to introduce another issuer', () => {
+    const key = searchPublicKey('search-test');
+
+    expect(() =>
+      loadConfig(appConfigSchema, {
+        ...complete,
+        SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: `${key}],"other-service":[${key}`,
+      }),
+    ).toThrow(/SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
+  });
+
+  it('loads a canonical cursor key independently of the Task signer', () => {
+    const key = randomBytes(32).toString('base64url');
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      SEARCH_PROJECTION_CURSOR_SECRET: key,
+    });
+
+    expect(config.SEARCH_PROJECTION_CURSOR_SECRET).toBe(key);
+    expect(config.INTERNAL_TOKEN_PRIVATE_JWK).toBeUndefined();
+  });
+
+  it.each([`${'A'.repeat(42)}B`, `${'A'.repeat(43)}=`, 'invalid-cursor-key-sentinel'])(
+    'rejects a noncanonical cursor key without printing it',
+    (key) => {
+      const load = () =>
+        loadConfig(appConfigSchema, { ...complete, SEARCH_PROJECTION_CURSOR_SECRET: key });
+
+      expect(load).toThrow(/SEARCH_PROJECTION_CURSOR_SECRET/u);
+      expect(load).not.toThrow(key);
+    },
+  );
 
   it('does not read the migrator URL: the running service never needs it', () => {
     expect(loadConfig(appConfigSchema, complete)).not.toHaveProperty('MIGRATION_DATABASE_URL');

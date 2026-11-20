@@ -34,6 +34,10 @@ import { z } from 'zod';
  *   them.
  * - `INTERNAL_TOKEN_AUDIENCE` and `INTERNAL_TOKEN_TRUSTED_ISSUERS`: the `aud` this service accepts
  *   and the public keys of the backends allowed to call it.
+ * - `SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`: optional comma-separated public keys for
+ *   `search-service`. A `search-service` entry in the explicit issuer map takes precedence.
+ * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional stable, 32-byte base64url key for projection
+ *   cursors. It takes precedence over a key derived from the service signer.
  * - `TASK_SERVICE_URL` and `INTERNAL_TOKEN_PRIVATE_JWK`: the Task base URL and the key used to
  *   sign live direct-space access lookups as `document-service`. Set both to enable lookups.
  *
@@ -45,6 +49,7 @@ export type AppConfig = BaseConfig &
   InternalTokenVerifierConfig & {
     readonly TASK_SERVICE_URL?: string;
     readonly INTERNAL_TOKEN_PRIVATE_JWK?: Ed25519PrivateJwk;
+    readonly SEARCH_PROJECTION_CURSOR_SECRET?: string;
   };
 
 /**
@@ -79,6 +84,15 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
       .optional(),
     INTERNAL_TOKEN_PRIVATE_JWK:
       internalTokenSignerConfigShape.INTERNAL_TOKEN_PRIVATE_JWK.optional(),
+    SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: z.string().trim().optional(),
+    SEARCH_PROJECTION_CURSOR_SECRET: z
+      .string()
+      .refine(
+        (value) =>
+          value.length === 43 && Buffer.from(value, 'base64url').toString('base64url') === value,
+        'Expected a canonical unpadded base64url key of 32 bytes.',
+      )
+      .optional(),
   })
   .superRefine((config, context) => {
     if (
@@ -93,7 +107,38 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
         message: 'Set TASK_SERVICE_URL and INTERNAL_TOKEN_PRIVATE_JWK together.',
       });
     }
-  });
+  })
+  .transform(
+    ({ SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: searchKeys, ...config }, context): AppConfig => {
+      if (!searchKeys || Object.hasOwn(config.INTERNAL_TOKEN_TRUSTED_ISSUERS, 'search-service')) {
+        return config;
+      }
+      try {
+        const keys: unknown = JSON.parse(`[${searchKeys}]`);
+        const searchIssuer =
+          internalTokenVerifierConfigShape.INTERNAL_TOKEN_TRUSTED_ISSUERS.safeParse(
+            JSON.stringify({ 'search-service': keys }),
+          );
+        if (searchIssuer.success) {
+          return {
+            ...config,
+            INTERNAL_TOKEN_TRUSTED_ISSUERS: {
+              ...config.INTERNAL_TOKEN_TRUSTED_ISSUERS,
+              ...searchIssuer.data,
+            },
+          };
+        }
+      } catch {
+        // Report the setting name without reflecting its contents.
+      }
+      context.addIssue({
+        code: 'custom',
+        path: ['SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS'],
+        message: 'Expected comma-separated public Ed25519 JWKs.',
+      });
+      return z.NEVER;
+    },
+  );
 
 /**
  * Interface MigrationConfig

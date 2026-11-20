@@ -6,8 +6,8 @@
 # they live in cadenway-ops, which documents each variable in docs/service-environment.md. Task
 # access lookups are enabled only when both optional variables below are configured.
 #
-# INTERNAL_TOKEN_TRUSTED_ISSUERS lists who may call this service: the API gateway only. The folded
-# scalar gives the service one line of JSON.
+# The folded INTERNAL_TOKEN_TRUSTED_ISSUERS scalar supplies the API gateway issuer as one line of
+# JSON. The optional Search public keys enable verification for search-service.
 #
 # MIGRATION_DATABASE_URL is deliberately absent: the GitOps agent of cadenway-ops hands the
 # migrator's URL to the one-off migration container only (docs/database.md there), so the running
@@ -25,6 +25,8 @@ services:
       INTERNAL_TOKEN_AUDIENCE: document-service
       INTERNAL_TOKEN_TRUSTED_ISSUERS: >-
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
+      SEARCH_PROJECTION_CURSOR_SECRET: ${DOCUMENT_SEARCH_PROJECTION_CURSOR_SECRET:-}
       TASK_SERVICE_URL: ${DOCUMENT_TASK_SERVICE_URL:-}
       INTERNAL_TOKEN_PRIVATE_JWK: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
     networks:

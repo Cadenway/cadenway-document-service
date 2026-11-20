@@ -3,7 +3,7 @@ import type { Server } from 'node:http';
 
 import { createApplication, InternalTokenSigner, SkipInternalToken } from '@cadenway/nest-common';
 import type { Ed25519PublicJwk } from '@cadenway/nest-common';
-import { Controller, Get, Header, Module, Post } from '@nestjs/common';
+import { Controller, Get, Header, HttpCode, Module, Post } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -12,6 +12,8 @@ import { configureDocumentPrivateHttp } from './document-private-http.js';
 
 const documentCollection = '/internal/v1/documents';
 const documentUrl = `${documentCollection}/019a7005-4b2c-7d4e-8f5a-6b7c8d9e0f17`;
+const searchProjections = '/internal/v1/document-search-projections';
+const searchProjectionResolution = `${searchProjections}/resolve`;
 const lastModified = 'Wed, 01 Jan 2020 00:00:00 GMT';
 const cacheControl = 'private, no-store';
 
@@ -19,7 +21,7 @@ const cacheControl = 'private, no-store';
 class DocumentHttpFixture {
   // #region Methods
   /** Returns a catalog page without a document version. */
-  @Get(documentCollection)
+  @Get([documentCollection, searchProjections])
   public list(): { readonly items: readonly string[] } {
     return { items: [] };
   }
@@ -35,6 +37,13 @@ class DocumentHttpFixture {
   @Post(documentCollection)
   public create(): { readonly version: number } {
     return { version: 1 };
+  }
+
+  /** Registers the projection resolution behind the shared parser. */
+  @Post(searchProjectionResolution)
+  @HttpCode(200)
+  public resolveProjections(): { readonly results: readonly string[] } {
+    return { results: [] };
   }
 
   /** Provides an unrelated route for the scope check. */
@@ -108,6 +117,24 @@ describe('document HTTP privacy', () => {
       .expect(200, { items: [] });
   });
 
+  it('returns a complete private projection page even for a wildcard conditional read', async () => {
+    await request(server)
+      .get(`${searchProjections}/?limit=1`)
+      .set('Authorization', authorization)
+      .set('If-None-Match', '*')
+      .expect('Cache-Control', cacheControl)
+      .expect(200, { items: [] });
+  });
+
+  it('keeps a successful projection resolve private and no-store', async () => {
+    await request(server)
+      .post(searchProjectionResolution)
+      .set('Authorization', authorization)
+      .send({})
+      .expect('Cache-Control', cacheControl)
+      .expect(200, { results: [] });
+  });
+
   it('returns the current document even for a matching If-Modified-Since', async () => {
     await request(server)
       .get(documentUrl)
@@ -127,10 +154,23 @@ describe('document HTTP privacy', () => {
       .expect(200);
   });
 
-  it('marks a guard rejection private and no-store', async () => {
+  it.each([documentUrl, searchProjections])(
+    'marks a guard rejection on %s private and no-store',
+    async (url) => {
+      const response = await request(server)
+        .get(url)
+        .set('If-None-Match', '*')
+        .expect('Cache-Control', cacheControl)
+        .expect('Content-Type', /application\/problem\+json/u)
+        .expect(401);
+      expect(response.body).toMatchObject({ code: 'auth.token-missing' });
+    },
+  );
+
+  it('marks a projection resolve guard rejection private and no-store', async () => {
     const response = await request(server)
-      .get(documentUrl)
-      .set('If-None-Match', '*')
+      .post(searchProjectionResolution)
+      .send({})
       .expect('Cache-Control', cacheControl)
       .expect('Content-Type', /application\/problem\+json/u)
       .expect(401);
@@ -150,29 +190,35 @@ describe('document HTTP privacy', () => {
     });
   });
 
-  it('marks malformed JSON rejected by the shared parser private and no-store', async () => {
-    const response = await request(server)
-      .post(documentCollection)
-      .set('Content-Type', 'application/json')
-      .send('{')
-      .expect('Cache-Control', cacheControl)
-      .expect('Content-Type', /application\/problem\+json/u)
-      .expect(400);
-    expect(response.body).toMatchObject({
-      code: 'request.invalid',
-      details: { issues: [{ in: 'body', code: 'invalid_json' }] },
-    });
-  });
+  it.each([documentCollection, searchProjectionResolution])(
+    'marks malformed JSON on %s private and no-store',
+    async (url) => {
+      const response = await request(server)
+        .post(url)
+        .set('Content-Type', 'application/json')
+        .send('{')
+        .expect('Cache-Control', cacheControl)
+        .expect('Content-Type', /application\/problem\+json/u)
+        .expect(400);
+      expect(response.body).toMatchObject({
+        code: 'request.invalid',
+        details: { issues: [{ in: 'body', code: 'invalid_json' }] },
+      });
+    },
+  );
 
-  it('keeps the shared response for an oversized body private and no-store', async () => {
-    const response = await request(server)
-      .post(documentCollection)
-      .send({ body: 'a'.repeat(40) })
-      .expect('Cache-Control', cacheControl)
-      .expect('Content-Type', /application\/problem\+json/u)
-      .expect(400);
-    expect(response.body).toMatchObject({ code: 'request.body-too-large' });
-  });
+  it.each([documentCollection, searchProjectionResolution])(
+    'keeps the oversized body response on %s private and no-store',
+    async (url) => {
+      const response = await request(server)
+        .post(url)
+        .send({ body: 'a'.repeat(40) })
+        .expect('Cache-Control', cacheControl)
+        .expect('Content-Type', /application\/problem\+json/u)
+        .expect(400);
+      expect(response.body).toMatchObject({ code: 'request.body-too-large' });
+    },
+  );
 
   it('leaves conditional freshness on an unrelated route', async () => {
     const response = await request(server)
