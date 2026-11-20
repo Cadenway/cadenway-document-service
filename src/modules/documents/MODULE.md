@@ -31,6 +31,13 @@ return private, uncacheable responses and recheck access through Task.
 | `PATCH /internal/v1/documents/{documentId}`  | Edit supplied fields             |
 | `DELETE /internal/v1/documents/{documentId}` | Delete with a strong version     |
 
+Search has two separate, private projection operations. A fixed Search system actor with a
+signed organization can page the immutable document UUIDs using
+`GET /internal/v1/document-search-projections` or resolve ordered IDs with
+`POST /internal/v1/document-search-projections/resolve`. Active projections carry title and
+Markdown. A known tombstone carries only its terminal version. The export cursor
+authenticates the tenant and initial upper bound, and both responses are bounded to 1 MiB.
+
 ## Events emitted
 
 `doc.created.v1`, `doc.updated.v1` and `doc.deleted.v1` carry the routing identifiers, version
