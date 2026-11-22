@@ -21,8 +21,10 @@ export class DrizzleDocumentUnitOfWork implements DocumentUnitOfWork {
     organizationId: string,
     work: (store: DocumentTransaction) => Promise<T>,
   ): Promise<T> {
-    return this.tenant.run((scope) =>
-      work(new DrizzleDocumentTransaction(scope, organizationId, this.outbox)),
+    // An automatic database retry would reuse the caller's old Task authorization decision.
+    return this.tenant.run(
+      (scope) => work(new DrizzleDocumentTransaction(scope, organizationId, this.outbox)),
+      { maxAttempts: 1 },
     );
   }
   // #endregion

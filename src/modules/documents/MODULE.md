@@ -64,9 +64,13 @@ None.
 
 Use cases check Task authorization before entering their write transaction. The document, its
 receipt and the outbox fact commit together. A concurrent create with a caller key already in use
-returns a conflict without waiting. Edits and deletes check the current strong version under the
-document row lock. A system maintenance transaction removes up to 500 expired receipts per
-replica every 30 seconds, and skips rows locked by concurrent work.
+returns a conflict without waiting. Edits and deletes require an immediate row lock and a live
+edit decision for the revision read before acquiring it. If the revision advanced, the operation
+retries once with a fresh Task decision before using that revision or returning its version.
+A contended row or a local wait of more than two seconds after authorization returns an
+unavailable response. The database runner does not retry writes with an earlier Task decision.
+A system maintenance transaction removes up to 500 expired receipts per replica every 30 seconds
+and skips rows locked by concurrent work.
 
 ## Decisions
 

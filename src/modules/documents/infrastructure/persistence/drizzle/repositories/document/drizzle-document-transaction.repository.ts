@@ -59,15 +59,14 @@ export class DrizzleDocumentTransaction implements DocumentTransaction {
     return id;
   }
 
-  /** Loads an owned aggregate, locking it for a mutation when requested. */
-  public async find(documentId: string, lock: boolean): Promise<Document | null> {
-    const query = this.scope.db
+  /** Locks a document immediately so the Task access decision cannot age on a contended row. */
+  public async findAndLock(documentId: string): Promise<Document | null> {
+    const [row] = await this.scope.db
       .select()
       .from(documents)
       .where(and(eq(documents.organizationId, this.organizationId), eq(documents.id, documentId)))
-      .limit(1);
-    const rows = lock ? await query.for('update') : await query;
-    const row = rows[0];
+      .limit(1)
+      .for('update', { noWait: true });
     return row === undefined ? null : documentFromRow(row);
   }
 

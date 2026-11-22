@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Document } from '../../../domain/aggregates/document/document.aggregate.js';
+import { Document } from '../../../domain/aggregates/document/document.aggregate.js';
 import { CreateDocument } from '../../use-cases/commands/document/create-document/create-document.use-case.js';
 import { DeleteDocument } from '../../use-cases/commands/document/delete-document/delete-document.use-case.js';
 import { UpdateDocument } from '../../use-cases/commands/document/update-document/update-document.use-case.js';
@@ -23,7 +23,7 @@ function fixture() {
   let receipt: DocumentCreateReceipt | null = null;
   const store = {
     newId: vi.fn().mockResolvedValue(id),
-    find: vi
+    findAndLock: vi
       .fn<() => Promise<Document | null>>()
       .mockImplementation(() => Promise.resolve(document)),
     insert: vi.fn().mockImplementation((value: Document) => {
@@ -150,6 +150,54 @@ describe('document operations', () => {
     await expect(
       update.execute({ ...caller, documentId: id, title: 'Notes', expectedVersion: 99 }),
     ).rejects.toMatchObject({ reason: 'version-mismatch', currentVersion: 1 });
+  });
+
+  it('refreshes write authority before returning a conflict on a newer document revision', async () => {
+    const f = fixture();
+    const created = await new CreateDocument(f.access, f.work, f.runtime).execute({
+      ...caller,
+      spaceId,
+      title: 'Notes',
+    });
+    if (created.document.status !== 'active') throw new Error('Missing active fixture.');
+    const newer = Document.restore({ ...created.document, title: 'Newer', version: 2 });
+    f.reader.find
+      .mockResolvedValueOnce(Document.restore(created.document))
+      .mockResolvedValueOnce(newer);
+    f.store.findAndLock.mockResolvedValue(newer);
+    f.access.resolve.mockClear();
+    const update = new UpdateDocument(f.reader, f.access, f.work, f.runtime);
+
+    await expect(
+      update.execute({ ...caller, documentId: id, title: 'New', expectedVersion: 1 }),
+    ).rejects.toMatchObject({ reason: 'version-mismatch', currentVersion: 2 });
+    expect(f.access.resolve).toHaveBeenCalledTimes(2);
+    expect(f.store.save).not.toHaveBeenCalled();
+  });
+
+  it('refuses a mutation when local transaction startup outlasts the edit decision', async () => {
+    const f = fixture();
+    const created = await new CreateDocument(f.access, f.work, f.runtime).execute({
+      ...caller,
+      spaceId,
+      title: 'Notes',
+    });
+    let elapsed = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      f.store.findAndLock.mockImplementationOnce(() => {
+        elapsed = 2_001;
+        return Promise.resolve(Document.restore(created.document));
+      });
+      const update = new UpdateDocument(f.reader, f.access, f.work, f.runtime);
+
+      await expect(
+        update.execute({ ...caller, documentId: id, title: 'New', expectedVersion: 1 }),
+      ).rejects.toMatchObject({ reason: 'unavailable' });
+      expect(f.store.save).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('hides a deleted document and prevents reuse of its live creation receipt', async () => {
