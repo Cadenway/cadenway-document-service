@@ -8,6 +8,7 @@ import type { DocumentSpaceAccess } from '../../../../ports/outbound/authorizati
 import type { DocumentRuntime } from '../../../../ports/outbound/runtime/document/document-runtime.port.js';
 import type { DocumentUnitOfWork } from '../../../../ports/outbound/transactions/document/document-unit-of-work.port.js';
 import { documentRoles } from '../../../../services/document/document-authorization.service.js';
+import { requireFreshDocumentWrite } from '../../../../services/document/document-visible.service.js';
 import type { CreateDocumentInput } from './create-document.input.js';
 import type { CreateDocumentOutput } from './create-document.output.js';
 
@@ -30,6 +31,7 @@ export class CreateDocument {
     );
     if (role === undefined) throw new DocumentApplicationError('space-not-found');
     if (role !== 'edit') throw new DocumentApplicationError('role-insufficient', role);
+    const authorizedAt = performance.now();
     const title = normalizeDocumentTitle(input.title);
     const body = validateDocumentBody(input.body ?? '');
     const bytes = new TextEncoder().encode(
@@ -38,6 +40,7 @@ export class CreateDocument {
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
     const fingerprint = Array.from(digest, (value) => value.toString(16).padStart(2, '0')).join('');
     return this.work.run(input.organizationId, async (store) => {
+      requireFreshDocumentWrite(authorizedAt);
       if (input.idempotencyKey !== undefined) {
         const receipt = await store.findCreateReceipt(input.actorUserId, input.idempotencyKey);
         if (receipt === 'in-progress')
@@ -45,7 +48,8 @@ export class CreateDocument {
         if (receipt !== null) {
           if (receipt.fingerprint !== fingerprint)
             throw new DocumentApplicationError('idempotency-key-reused');
-          const current = await store.find(receipt.documentId, true);
+          const current = await store.findAndLock(receipt.documentId);
+          requireFreshDocumentWrite(authorizedAt);
           if (current?.snapshot.status !== 'active' || receipt.document === null)
             throw new DocumentApplicationError('document-not-found');
           return { document: receipt.document };

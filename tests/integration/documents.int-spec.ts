@@ -313,6 +313,33 @@ describe('documents through the signed internal HTTP boundary', () => {
     failTask = false;
   });
 
+  it('returns a retryable response instead of waiting on a contended document row', async () => {
+    const token = await bearer(organizationId);
+    const client = await database().connect();
+    try {
+      await client.query('begin');
+      await client.query("select set_config('app.organization_id', $1, true)", [organizationId]);
+      await client.query(
+        'select id from documents where organization_id = $1 and id = $2 for update',
+        [organizationId, documentId],
+      );
+      const response = await request(service().getHttpServer())
+        .patch(`/internal/v1/documents/${documentId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('If-Match', '"1"')
+        .send({ title: 'Edited notes' })
+        .timeout(4_000);
+      expect(response.status).toBe(503);
+      expect((JSON.parse(response.text) as { code: string }).code).toBe('document.unavailable');
+    } finally {
+      try {
+        await client.query('rollback');
+      } finally {
+        client.release();
+      }
+    }
+  });
+
   it('persists across service restart and erases receipt content on deletion', async () => {
     const token = await bearer(organizationId);
     await service().close();

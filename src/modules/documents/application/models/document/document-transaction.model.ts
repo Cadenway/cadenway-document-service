@@ -7,7 +7,7 @@ export interface DocumentTransaction {
   // #region Methods
   /** Contract member. */
   newId(): Promise<string>;
-  find(documentId: string, lock: boolean): Promise<Document | null>;
+  findAndLock(documentId: string): Promise<Document | null>;
   insert(document: Document): Promise<void>;
   save(document: Document): Promise<void>;
   append(fact: DocumentFact): Promise<void>;
