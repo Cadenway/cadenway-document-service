@@ -13,6 +13,33 @@ type SpaceRoles = Awaited<ReturnType<DocumentSpaceAccess['resolve']>>;
 
 const resolvePath = '/internal/v1/spaces/access/resolve';
 
+// One proof contains at most 100 UUIDs with short role names.
+const maximumProofBytes = 16_384;
+
+async function readProof(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new DocumentApplicationError('unavailable');
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maximumProofBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw new DocumentApplicationError('unavailable');
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)),
+    ) as unknown;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 /** Fetches current direct-space roles using the same verified user and organization as the caller. */
 export class TaskDocumentSpaceAccessAdapter implements DocumentSpaceAccess {
   // #region Constructor
@@ -49,7 +76,9 @@ export class TaskDocumentSpaceAccessAdapter implements DocumentSpaceAccess {
         void response.body?.cancel().catch(() => undefined);
         throw new DocumentApplicationError('unavailable');
       }
-      const parsed = ResolveDocumentSpaceAccessInternalResponse.safeParse(await response.json());
+      const parsed = ResolveDocumentSpaceAccessInternalResponse.safeParse(
+        await readProof(response),
+      );
       if (!parsed.success) throw new DocumentApplicationError('unavailable');
 
       const requested = [...new Set(body.data.spaceIds.map((id) => id.toLowerCase()))];

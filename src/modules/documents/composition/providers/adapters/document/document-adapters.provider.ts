@@ -42,24 +42,27 @@ export const documentAdapters: readonly Provider[] = [
   {
     provide: DOCUMENT_SPACE_ACCESS,
     inject: [CONFIG, { token: InternalTokenSigner, optional: true }],
-    useFactory: (config: AppConfig, signer?: InternalTokenSigner): DocumentSpaceAccess =>
-      config.TASK_SERVICE_URL !== undefined && signer !== undefined
-        ? new TaskDocumentSpaceAccessAdapter(
-            new InternalHttpClient({
-              service: 'task-service',
-              baseUrl: config.TASK_SERVICE_URL,
-              signer,
-            }),
-          )
-        : unavailableSpaceAccess,
+    useFactory: (config: AppConfig, signer?: InternalTokenSigner): DocumentSpaceAccess => {
+      if (config.DOCUMENT_ACCESS_MODE === 'search-only') return unavailableSpaceAccess;
+      if (config.TASK_SERVICE_URL === undefined || signer === undefined) {
+        throw new Error('The task-authorized Document API requires the Task origin and signer.');
+      }
+      return new TaskDocumentSpaceAccessAdapter(
+        new InternalHttpClient({
+          service: 'task-service',
+          baseUrl: config.TASK_SERVICE_URL,
+          signer,
+        }),
+      );
+    },
   },
   {
     provide: AesDocumentCursorAdapter,
     inject: [CONFIG],
     useFactory: (config: AppConfig): AesDocumentCursorAdapter => {
       const privateKey = config.INTERNAL_TOKEN_PRIVATE_JWK;
-      // Replicas with the same service key can read each other's cursors. The dormant
-      // configuration issues no cursors because Task authorization is unavailable.
+      // Replicas with the same service key can read each other's cursors. The search-only
+      // configuration issues no user cursors because Task authorization is unavailable.
       const key = privateKey
         ? new Uint8Array(
             hkdfSync(

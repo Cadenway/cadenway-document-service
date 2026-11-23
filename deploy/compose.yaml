@@ -3,8 +3,8 @@
 # environments/<env>/services/document-service.yaml for the environment it deploys to.
 #
 # Internal service: no Traefik label, no published port. Secret values are referenced by name;
-# they live in cadenway-ops, which documents each variable in docs/service-environment.md. Task
-# access lookups are enabled only when both optional variables below are configured.
+# they live in cadenway-ops, which documents each variable in docs/service-environment.md. The
+# user API requires both Task access settings. Select search-only for a projection-only profile.
 #
 # The folded INTERNAL_TOKEN_TRUSTED_ISSUERS scalar supplies the API gateway issuer as one line of
 # JSON. The optional Search public keys enable verification for search-service.
@@ -27,6 +27,7 @@ services:
         {"api-gateway": [${API_GATEWAY_INTERNAL_TOKEN_PUBLIC_JWKS}]}
       SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: ${SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS:-}
       SEARCH_PROJECTION_CURSOR_SECRET: ${DOCUMENT_SEARCH_PROJECTION_CURSOR_SECRET:-}
+      DOCUMENT_ACCESS_MODE: ${DOCUMENT_ACCESS_MODE:-task-authorized}
       TASK_SERVICE_URL: ${DOCUMENT_TASK_SERVICE_URL:-}
       INTERNAL_TOKEN_PRIVATE_JWK: ${DOCUMENT_SERVICE_INTERNAL_TOKEN_PRIVATE_JWK:-}
     networks:

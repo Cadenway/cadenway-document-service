@@ -40,6 +40,8 @@ import { PlatformModule } from './modules/platform/platform.module.js';
  * - `HealthModule`: `GET /health/live` answers as soon as the process runs; `GET /health/ready`
  *   answers 503 while PostgreSQL or NATS does not answer within 1 second, and from the start of a
  *   shutdown. Both routes are exempt from the internal token, every other route requires it.
+ *   Startup validates Task authority settings for the user API. Requests requiring this
+ *   authority fail closed when Task is unavailable, independently of Search projection health.
  *   `shutdownDelayMs` is 0: nothing that routes to this internal service reads its readiness.
  *   Callers reach it through the Docker DNS of the `internal` network, which keeps returning a
  *   stopping container until it exits, whatever its health (checked on Docker 28.2), and the GitOps
