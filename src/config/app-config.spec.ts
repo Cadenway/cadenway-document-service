@@ -130,6 +130,7 @@ describe('appConfigSchema', () => {
     const config = loadConfig(appConfigSchema, {
       ...complete,
       SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: `${first},${second}`,
+      SEARCH_PROJECTION_CURSOR_SECRET: randomBytes(32).toString('base64url'),
     });
 
     expect(Object.keys(config.INTERNAL_TOKEN_TRUSTED_ISSUERS)).toEqual([
@@ -147,6 +148,7 @@ describe('appConfigSchema', () => {
       ...complete,
       INTERNAL_TOKEN_TRUSTED_ISSUERS: `{"search-service":[${searchPublicKey('explicit-search')}]}`,
       SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: 'unused-fallback',
+      SEARCH_PROJECTION_CURSOR_SECRET: randomBytes(32).toString('base64url'),
     });
 
     expect(config.INTERNAL_TOKEN_TRUSTED_ISSUERS['search-service']?.map((key) => key.kid)).toEqual([
@@ -163,6 +165,32 @@ describe('appConfigSchema', () => {
 
     expect(load).toThrow(/SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS/u);
     expect(load).not.toThrow(/invalid-search-key-sentinel/u);
+  });
+
+  it.each(['explicit', 'fallback'] as const)(
+    'requires cursor material when Search has %s trust',
+    (source) => {
+      const searchKey = searchPublicKey('search-test');
+      const trust =
+        source === 'explicit'
+          ? { INTERNAL_TOKEN_TRUSTED_ISSUERS: `{"search-service":[${searchKey}]}` }
+          : { SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: searchKey };
+
+      expect(() => loadConfig(appConfigSchema, { ...complete, ...trust })).toThrow(
+        /SEARCH_PROJECTION_CURSOR_SECRET:/u,
+      );
+    },
+  );
+
+  it('accepts the service signer as cursor material in search-only mode', () => {
+    const config = loadConfig(appConfigSchema, {
+      ...complete,
+      SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS: searchPublicKey('search-test'),
+      INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey(),
+    });
+
+    expect(config.INTERNAL_TOKEN_TRUSTED_ISSUERS['search-service']).toHaveLength(1);
+    expect(config.INTERNAL_TOKEN_PRIVATE_JWK?.kid).toBe('document-test');
   });
 
   it('rejects private material in the Search verification key list', () => {

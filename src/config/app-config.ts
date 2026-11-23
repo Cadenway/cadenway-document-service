@@ -37,7 +37,8 @@ import { z } from 'zod';
  * - `SEARCH_SERVICE_INTERNAL_TOKEN_PUBLIC_JWKS`: optional comma-separated public keys for
  *   `search-service`. A `search-service` entry in the explicit issuer map takes precedence.
  * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional stable, 32-byte base64url key for projection
- *   cursors. It takes precedence over a key derived from the service signer.
+ *   cursors. It takes precedence over a key derived from the service signer. Search trust
+ *   requires one of those keys.
  * - `DOCUMENT_ACCESS_MODE`: `task-authorized` enables the user API and requires a Task origin
  *   and signing key. `search-only` keeps the Search projections available without the user API.
  * - `TASK_SERVICE_URL` and `INTERNAL_TOKEN_PRIVATE_JWK`: the Task origin and the key used to
@@ -147,7 +148,20 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
       });
       return z.NEVER;
     },
-  );
+  )
+  .superRefine((config, context) => {
+    if (
+      Object.hasOwn(config.INTERNAL_TOKEN_TRUSTED_ISSUERS, 'search-service') &&
+      config.SEARCH_PROJECTION_CURSOR_SECRET === undefined &&
+      config.INTERNAL_TOKEN_PRIVATE_JWK === undefined
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['SEARCH_PROJECTION_CURSOR_SECRET'],
+        message: 'Required when Search is trusted and no service signer is configured.',
+      });
+    }
+  });
 
 /**
  * Interface MigrationConfig
