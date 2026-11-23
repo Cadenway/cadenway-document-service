@@ -149,6 +149,32 @@ describe('TaskDocumentSpaceAccessAdapter', () => {
     });
   });
 
+  it('rejects and stops reading a Task proof beyond the bounded batch size', async () => {
+    const abortRead = vi.fn();
+    const chunks = [new TextEncoder().encode('{"results":[]}'), new Uint8Array(16_384).fill(32)];
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk === undefined) controller.close();
+          else controller.enqueue(chunk);
+        },
+        cancel: abortRead,
+      },
+      { highWaterMark: 0 },
+    );
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(body, { headers: { ...noStore, 'Content-Type': 'application/json' } }),
+      );
+
+    await expect(
+      runWithOrganizationContext(context, () => adapter(fetch).resolve(input)),
+    ).rejects.toMatchObject({ reason: 'unavailable' });
+    expect(abortRead).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ['organization.not-found', 'organization-not-found'],
     ['unexpected', 'unavailable'],
