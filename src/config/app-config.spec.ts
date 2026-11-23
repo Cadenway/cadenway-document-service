@@ -12,6 +12,7 @@ describe('appConfigSchema', () => {
     '{"api-gateway":[{"kty":"OKP","crv":"Ed25519","x":"MVZQc5h6AXxnMpaBTaYw5kI-yWWawl6zp8Srhuf5NK0","kid":"local-placeholder"}]}';
   const complete: Readonly<Record<string, string>> = {
     PORT: '3014',
+    DOCUMENT_ACCESS_MODE: 'search-only',
     DATABASE_URL: 'postgres://document_app:document_app@localhost:5432/document',
     NATS_URL: 'nats://localhost:4222',
     NATS_USER: 'document',
@@ -35,6 +36,7 @@ describe('appConfigSchema', () => {
     expect(loadConfig(appConfigSchema, complete)).toEqual({
       NODE_ENV: 'production',
       PORT: 3014,
+      DOCUMENT_ACCESS_MODE: 'search-only',
       LOG_LEVEL: 'info',
       LOG_PRETTY: false,
       DATABASE_URL: 'postgres://document_app:document_app@localhost:5432/document',
@@ -209,7 +211,7 @@ describe('appConfigSchema', () => {
     expect(loadConfig(appConfigSchema, complete)).not.toHaveProperty('MIGRATION_DATABASE_URL');
   });
 
-  it('leaves Task access unconfigured when Compose supplies two empty defaults', () => {
+  it('allows empty Task access settings in explicit search-only mode', () => {
     const config = loadConfig(appConfigSchema, {
       ...complete,
       TASK_SERVICE_URL: '',
@@ -219,22 +221,45 @@ describe('appConfigSchema', () => {
     expect(config.INTERNAL_TOKEN_PRIVATE_JWK).toBeUndefined();
   });
 
-  it('loads the Task base URL and a signing key together', () => {
+  it('requires both Task settings unless search-only mode was chosen', () => {
+    const environment = { ...complete, DOCUMENT_ACCESS_MODE: undefined };
+    const load = () => loadConfig(appConfigSchema, environment);
+    expect(load).toThrow(/TASK_SERVICE_URL: required, not set/u);
+    expect(load).toThrow(/INTERNAL_TOKEN_PRIVATE_JWK: required, not set/u);
+  });
+
+  it('refuses a Task origin in search-only mode', () => {
+    expect(() =>
+      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_URL: taskServiceUrl }),
+    ).toThrow(/Use task-authorized mode/u);
+  });
+
+  it('loads the Task base URL and a signing key in the default mode', () => {
     const config = loadConfig(appConfigSchema, {
       ...complete,
+      DOCUMENT_ACCESS_MODE: undefined,
       TASK_SERVICE_URL: taskServiceUrl,
       INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey(),
     });
+    expect(config.DOCUMENT_ACCESS_MODE).toBe('task-authorized');
     expect(config.TASK_SERVICE_URL).toBe(taskServiceUrl);
     expect(config.INTERNAL_TOKEN_PRIVATE_JWK?.kid).toBe('document-test');
   });
 
   it('names the missing setting when only half of Task access is configured', () => {
     expect(() =>
-      loadConfig(appConfigSchema, { ...complete, TASK_SERVICE_URL: taskServiceUrl }),
+      loadConfig(appConfigSchema, {
+        ...complete,
+        DOCUMENT_ACCESS_MODE: 'task-authorized',
+        TASK_SERVICE_URL: taskServiceUrl,
+      }),
     ).toThrow(/INTERNAL_TOKEN_PRIVATE_JWK: required, not set/u);
     expect(() =>
-      loadConfig(appConfigSchema, { ...complete, INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey() }),
+      loadConfig(appConfigSchema, {
+        ...complete,
+        DOCUMENT_ACCESS_MODE: 'task-authorized',
+        INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey(),
+      }),
     ).toThrow(/TASK_SERVICE_URL: required, not set/u);
   });
 
@@ -246,6 +271,7 @@ describe('appConfigSchema', () => {
     const load = () =>
       loadConfig(appConfigSchema, {
         ...complete,
+        DOCUMENT_ACCESS_MODE: 'task-authorized',
         TASK_SERVICE_URL: url,
         INTERNAL_TOKEN_PRIVATE_JWK: taskSigningKey(),
       });
@@ -257,6 +283,7 @@ describe('appConfigSchema', () => {
     const load = () =>
       loadConfig(appConfigSchema, {
         ...complete,
+        DOCUMENT_ACCESS_MODE: 'task-authorized',
         TASK_SERVICE_URL: taskServiceUrl,
         INTERNAL_TOKEN_PRIVATE_JWK: 'invalid-key-sentinel',
       });

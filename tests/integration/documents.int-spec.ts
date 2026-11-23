@@ -206,6 +206,7 @@ describe('documents through the signed internal HTTP boundary', () => {
     if (address === null || typeof address === 'string')
       throw new Error('Fixture Task port unavailable.');
     vi.stubEnv('PORT', '3014');
+    vi.stubEnv('DOCUMENT_ACCESS_MODE', 'task-authorized');
     vi.stubEnv('LOG_PRETTY', 'false');
     vi.stubEnv(
       'DATABASE_URL',
@@ -305,12 +306,21 @@ describe('documents through the signed internal HTTP boundary', () => {
       ).status,
     ).toBe(404);
     failTask = true;
-    const unavailable = await request(service().getHttpServer())
-      .get(`/internal/v1/documents/${documentId}`)
-      .set('Authorization', `Bearer ${token}`);
-    expect(unavailable.status).toBe(503);
-    expect((JSON.parse(unavailable.text) as { code: string }).code).toBe('document.unavailable');
-    failTask = false;
+    try {
+      const unavailable = await request(service().getHttpServer())
+        .get(`/internal/v1/documents/${documentId}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(unavailable.status).toBe(503);
+      expect((JSON.parse(unavailable.text) as { code: string }).code).toBe('document.unavailable');
+      expect((await request(service().getHttpServer()).get('/health/ready')).status).toBe(200);
+      const search = await projectionBearer(organizationId);
+      const projections = await request(service().getHttpServer())
+        .get('/internal/v1/document-search-projections')
+        .set('Authorization', `Bearer ${search}`);
+      expect(projections.status).toBe(200);
+    } finally {
+      failTask = false;
+    }
   });
 
   it('returns a retryable response instead of waiting on a contended document row', async () => {

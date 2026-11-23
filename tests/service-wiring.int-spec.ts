@@ -183,12 +183,12 @@ async function runMigrator(): Promise<void> {
   }
 }
 
-/** Applies the published bootstrap migration on its own before exercising the production upgrade. */
-async function runPlatformMigration(client: pg.Pool): Promise<void> {
+/** Applies the previous release's migrations before exercising the production upgrade. */
+async function runPreLeaseMigrations(client: pg.Pool): Promise<void> {
   const source = fileURLToPath(new URL('../migrations', import.meta.url));
   const folder = await mkdtemp(join(tmpdir(), 'document-migration-test-'));
   const meta = join(folder, 'meta');
-  const bootstrap = '0000_platform_tables';
+  const tags = ['0000_platform_tables', '0001_documents'];
   try {
     await mkdir(meta);
     const journal = JSON.parse(await readFile(join(source, 'meta', '_journal.json'), 'utf8')) as {
@@ -196,14 +196,16 @@ async function runPlatformMigration(client: pg.Pool): Promise<void> {
       readonly dialect: string;
       readonly entries: readonly { readonly tag: string }[];
     };
-    const [entry] = journal.entries;
-    if (entry?.tag !== bootstrap) throw new Error('Platform migration is missing.');
-    await cp(join(source, `${entry.tag}.sql`), join(folder, `${entry.tag}.sql`));
-    await writeFile(join(meta, '_journal.json'), JSON.stringify({ ...journal, entries: [entry] }));
+    for (const [index, tag] of tags.entries()) {
+      if (journal.entries[index]?.tag !== tag) throw new Error(`Migration ${tag} is missing.`);
+      await cp(join(source, `${tag}.sql`), join(folder, `${tag}.sql`));
+    }
+    const entries = journal.entries.slice(0, tags.length);
+    await writeFile(join(meta, '_journal.json'), JSON.stringify({ ...journal, entries }));
     await migrate(drizzle({ client }), { migrationsFolder: folder });
   } finally {
     await rm(join(meta, '_journal.json'), { force: true });
-    await rm(join(folder, `${bootstrap}.sql`), { force: true });
+    for (const tag of tags) await rm(join(folder, `${tag}.sql`), { force: true });
     await rmdir(meta);
     await rmdir(folder);
   }
@@ -242,7 +244,7 @@ describe('document-service wiring', () => {
   let app: NestExpressApplication | undefined;
   let signer: InternalTokenSigner;
   let migrator: pg.Pool;
-  let platformMigration: { readonly applied: string; readonly hash: string } | undefined;
+  let priorMigrations: readonly { readonly applied: string; readonly hash: string }[];
 
   /**
    * The running application.
@@ -283,14 +285,15 @@ describe('document-service wiring', () => {
     // The client is terminated (57P01) when a test stops PostgreSQL; the pool reports it as an
     // `error` event, which would otherwise be an uncaught exception.
     migrator.on('error', () => undefined);
-    await runPlatformMigration(migrator);
+    await runPreLeaseMigrations(migrator);
     const { rows } = await migrator.query<{ applied: string; hash: string }>(
-      'select created_at as applied, hash from drizzle.__drizzle_migrations',
+      'select created_at as applied, hash from drizzle.__drizzle_migrations order by created_at',
     );
-    [platformMigration] = rows;
+    priorMigrations = rows;
     await runMigrator();
 
     vi.stubEnv('PORT', '3014');
+    vi.stubEnv('DOCUMENT_ACCESS_MODE', 'search-only');
     vi.stubEnv('LOG_PRETTY', 'false');
     vi.stubEnv(
       'DATABASE_URL',
@@ -343,7 +346,7 @@ describe('document-service wiring', () => {
     }
   });
 
-  it('upgrades the bootstrap journal and keeps every table owned by the migrator', async () => {
+  it('upgrades the prior release journal and keeps every table owned by the migrator', async () => {
     const tables = await migrator.query<{ tablename: string; tableowner: string }>(
       `select tablename, tableowner from pg_tables where schemaname = 'public' order by tablename`,
     );
@@ -357,9 +360,27 @@ describe('document-service wiring', () => {
         tableowner: 'document_migrator',
       })),
     );
-    expect(platformMigration).toBeDefined();
-    expect(journal.rows).toHaveLength(2);
-    expect(journal.rows[0]).toEqual(platformMigration);
+    expect(priorMigrations).toHaveLength(2);
+    expect(journal.rows).toHaveLength(3);
+    expect(journal.rows.slice(0, 2)).toEqual(priorMigrations);
+  });
+
+  it('finalizes the expiry index and both outbox checks', async () => {
+    const index = await migrator.query<{ indisvalid: boolean }>(
+      `select indisvalid from pg_index
+       where indexrelid = 'public.outbox_events_lease_expiry_index'::regclass`,
+    );
+    expect(index.rows).toEqual([{ indisvalid: true }]);
+    const checks = await migrator.query<{ conname: string; convalidated: boolean }>(
+      `select conname, convalidated from pg_constraint
+       where conrelid = 'public.outbox_events'::regclass
+         and conname in ('outbox_events_status_check', 'outbox_events_lease_check')
+       order by conname`,
+    );
+    expect(checks.rows).toEqual([
+      { conname: 'outbox_events_lease_check', convalidated: true },
+      { conname: 'outbox_events_status_check', convalidated: true },
+    ]);
   });
 
   it('applies nothing when the migrator runs again', async () => {
@@ -368,7 +389,7 @@ describe('document-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 2 }]);
+    expect(journal.rows).toEqual([{ applied: 3 }]);
   });
 
   it('forces row-level security on the tables that carry an organization', async () => {
@@ -574,7 +595,7 @@ describe('document-service wiring', () => {
     const journal = await migrator.query<{ applied: number }>(
       'select count(*)::int as applied from drizzle.__drizzle_migrations',
     );
-    expect(journal.rows).toEqual([{ applied: 2 }]);
+    expect(journal.rows).toEqual([{ applied: 3 }]);
   });
 
   it('publishes a pending event through the outbox relay', async () => {

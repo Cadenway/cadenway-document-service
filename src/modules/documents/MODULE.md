@@ -78,6 +78,8 @@ and skips rows locked by concurrent work.
   unpaired UTF-16 surrogate is invalid text.
 - Preserve the original create response for up to 24 hours, including after edits. Deletion
   discards the saved response and retains the fingerprint until expiry.
-- Task authorization fails closed. Configuring the Task URL and issuer key enables calls.
-  Replicas derive the cursor key from the service signer. Rotating that key invalidates existing
+- The default `task-authorized` mode requires the Task URL and issuer key at startup. The explicit
+  `search-only` mode serves only Search projections and rejects the user operations. Temporary
+  Task failures fail closed on user requests while Search projections remain available.
+- Replicas derive the cursor key from the service signer. Rotating that key invalidates existing
   cursors, which callers can recover from by restarting the list.

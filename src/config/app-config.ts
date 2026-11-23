@@ -38,8 +38,10 @@ import { z } from 'zod';
  *   `search-service`. A `search-service` entry in the explicit issuer map takes precedence.
  * - `SEARCH_PROJECTION_CURSOR_SECRET`: optional stable, 32-byte base64url key for projection
  *   cursors. It takes precedence over a key derived from the service signer.
- * - `TASK_SERVICE_URL` and `INTERNAL_TOKEN_PRIVATE_JWK`: the Task base URL and the key used to
- *   sign live direct-space access lookups as `document-service`. Set both to enable lookups.
+ * - `DOCUMENT_ACCESS_MODE`: `task-authorized` enables the user API and requires a Task origin
+ *   and signing key. `search-only` keeps the Search projections available without the user API.
+ * - `TASK_SERVICE_URL` and `INTERNAL_TOKEN_PRIVATE_JWK`: the Task origin and the key used to
+ *   sign live direct-space access lookups as `document-service`.
  *
  * `OTEL_EXPORTER_OTLP_ENDPOINT` is read by `telemetry.ts`, before the application exists.
  */
@@ -47,6 +49,7 @@ export type AppConfig = BaseConfig &
   DatabaseConfig &
   MessagingConfig &
   InternalTokenVerifierConfig & {
+    readonly DOCUMENT_ACCESS_MODE: 'task-authorized' | 'search-only';
     readonly TASK_SERVICE_URL?: string;
     readonly INTERNAL_TOKEN_PRIVATE_JWK?: Ed25519PrivateJwk;
     readonly SEARCH_PROJECTION_CURSOR_SECRET?: string;
@@ -69,6 +72,7 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
     ...databaseConfigShape,
     ...messagingConfigShape,
     ...internalTokenVerifierConfigShape,
+    DOCUMENT_ACCESS_MODE: z.enum(['task-authorized', 'search-only']).default('task-authorized'),
     TASK_SERVICE_URL: z
       .url({ protocol: /^https?$/u, error: 'Expected the HTTP(S) base URL of task-service.' })
       .refine((value) => {
@@ -95,16 +99,21 @@ export const appConfigSchema: z.ZodType<AppConfig> = z
       .optional(),
   })
   .superRefine((config, context) => {
-    if (
-      (config.TASK_SERVICE_URL === undefined) !==
-      (config.INTERNAL_TOKEN_PRIVATE_JWK === undefined)
-    ) {
+    if (config.DOCUMENT_ACCESS_MODE === 'task-authorized') {
+      for (const setting of ['TASK_SERVICE_URL', 'INTERNAL_TOKEN_PRIVATE_JWK'] as const) {
+        if (config[setting] === undefined) {
+          context.addIssue({
+            code: 'custom',
+            path: [setting],
+            message: 'Required in task-authorized mode.',
+          });
+        }
+      }
+    } else if (config.TASK_SERVICE_URL !== undefined) {
       context.addIssue({
         code: 'custom',
-        path: [
-          config.TASK_SERVICE_URL === undefined ? 'TASK_SERVICE_URL' : 'INTERNAL_TOKEN_PRIVATE_JWK',
-        ],
-        message: 'Set TASK_SERVICE_URL and INTERNAL_TOKEN_PRIVATE_JWK together.',
+        path: ['TASK_SERVICE_URL'],
+        message: 'Use task-authorized mode when configuring the Task origin.',
       });
     }
   })
